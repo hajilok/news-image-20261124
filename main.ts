@@ -87,26 +87,40 @@ function inspectImage(buf: Buffer): ImageMeta {
       throw new Error('Truncated JPEG: missing EOI marker');
     }
     let offset = 2;
-    while (offset + 4 < buf.length) {
-      if (buf[offset] !== 0xff) {
-        throw new Error(`Malformed JPEG marker at offset ${offset}`);
+    let width = 0;
+    let height = 0;
+    let sawSos = false;
+    while (offset + 2 <= buf.length) {
+      while (offset < buf.length && buf[offset] === 0xff) offset += 1;
+      if (offset >= buf.length) break;
+      const marker = buf[offset];
+      offset += 1;
+      if (marker === 0xd9) break;
+      if (marker === 0xda) {
+        sawSos = true;
+        break;
       }
-      const marker = buf[offset + 1];
-      if (marker === 0xd9 || marker === 0xda) break;
-      const segLen = buf.readUInt16BE(offset + 2);
+      if (marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) continue;
+      if (offset + 2 > buf.length) throw new Error('Truncated JPEG segment length');
+      const segLen = buf.readUInt16BE(offset);
+      if (segLen < 2 || offset + segLen > buf.length) {
+        throw new Error(`Invalid JPEG segment length ${segLen} at offset ${offset}`);
+      }
       const isSof =
         (marker >= 0xc0 && marker <= 0xc3) ||
         (marker >= 0xc5 && marker <= 0xc7) ||
         (marker >= 0xc9 && marker <= 0xcb) ||
         (marker >= 0xcd && marker <= 0xcf);
-      if (isSof && offset + 9 <= buf.length) {
-        const height = buf.readUInt16BE(offset + 5);
-        const width = buf.readUInt16BE(offset + 7);
-        return { format: 'jpeg', width, height, bytes: buf.length, sha256 };
+      if (isSof && segLen >= 7) {
+        height = buf.readUInt16BE(offset + 3);
+        width = buf.readUInt16BE(offset + 5);
       }
-      offset += 2 + segLen;
+      offset += segLen;
     }
-    throw new Error('JPEG SOF frame dimensions not found');
+    if (width < 1 || height < 1 || !sawSos) {
+      throw new Error('Incomplete JPEG structure: missing SOF dimensions or SOS scan data');
+    }
+    return { format: 'jpeg', width, height, bytes: buf.length, sha256 };
   }
 
   throw new Error('Unsupported image format: expected PNG or JPEG bytes');
